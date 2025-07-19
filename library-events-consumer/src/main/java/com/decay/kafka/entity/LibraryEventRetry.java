@@ -1,7 +1,8 @@
 package com.decay.kafka.entity;
 
-import com.decay.kafka.LibraryEventConverter;
-import jakarta.persistence.*;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.Id;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -17,13 +18,6 @@ public class LibraryEventRetry {
     @Id
     @GeneratedValue
     private Integer id;
-    @Lob
-    @Convert(converter = LibraryEventConverter.class)
     private LibraryEvent libraryEvent;
     private boolean isRetry;
-    private String topicName;
-    private Integer kafkaPartition;
-    private Long kafkaOffset;
-    private String errorDetails;
-
 }
