@@ -1,7 +1,14 @@
 package com.decay.kafka.config;
 
+import com.decay.kafka.entity.LibraryEvent;
+import com.decay.kafka.entity.LibraryEventRetry;
+import com.decay.kafka.repository.LibraryEventsRetryRepository;
+import com.decay.kafka.service.LibraryEventsRetryService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
@@ -12,6 +19,7 @@ import org.springframework.dao.RecoverableDataAccessException;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.util.backoff.FixedBackOff;
@@ -28,32 +36,22 @@ public class LibraryEventsConfig {
     @Value("${kafka.dlt-topic}")
     private String deadLetterTopic;
 
+    private final LibraryEventsRetryService libraryEventsRetryService;
+    private final ObjectMapper objectMapper;
 
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory(
             ConsumerFactory<String, String> consumerFactory,
             KafkaTemplate<Integer, String> kafkaTemplate) {
 
-        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate,
-                (record, exception) -> {
-                    int currentAttempt = 1;
-                    Headers headers = record.headers();
-                    Header retryHeader = headers.lastHeader("x-retry-attempt");
-                    if (retryHeader != null) {
-                        log.info("Retry Header :{}", retryHeader.value());
-                        currentAttempt = Integer.parseInt(new String(retryHeader.value())) + 1;
-                    }
-                    log.info("currentAttempt:{}", currentAttempt);
-                    if (currentAttempt < 2 && exception.getCause() instanceof RecoverableDataAccessException) {
-                        log.info("Inside retry Topic with currentAttempt:{}", currentAttempt);
-                        headers.remove("x-retry-attempt");
-                        headers.add("x-retry-attempt", String.valueOf(currentAttempt).getBytes());
-                        return new TopicPartition(retryTopic, record.partition());
-                    } else {
-                        log.info("Inside dead letter Topic");
-                        return new TopicPartition(deadLetterTopic, record.partition());
-                    }
-                });
+        ConsumerRecordRecoverer recoverer = ( consumerRecord, exception) -> {
+            var consumerRec = (ConsumerRecord<Integer, String>) consumerRecord;
+            if (exception.getCause() instanceof RecoverableDataAccessException) {
+                libraryEventsRetryService.saveLibraryEvent(buildLibraryEvent(consumerRec, exception, true));
+            } else {
+                libraryEventsRetryService.saveLibraryEvent(buildLibraryEvent(consumerRec, exception, false));
+            }
+        };
 
         // Retry 3 times with 1 second interval
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 1));
@@ -65,5 +63,24 @@ public class LibraryEventsConfig {
         factory.setConsumerFactory(consumerFactory);
         factory.setCommonErrorHandler(errorHandler);
         return factory;
+    }
+
+    private LibraryEventRetry buildLibraryEvent(ConsumerRecord<Integer, String> consumerRecord,
+                                                Exception exception, boolean isRetry)
+             {
+                 LibraryEvent libraryEvent = null;
+                 try {
+                     libraryEvent = objectMapper.readValue(consumerRecord.value(), LibraryEvent.class);
+                 } catch (Exception e) {
+                     log.error("");
+                 }
+                 return LibraryEventRetry.builder()
+                .libraryEvent(libraryEvent)
+                .isRetry(isRetry)
+                .topicName(consumerRecord.topic())
+                .kafkaPartition(consumerRecord.partition())
+                .kafkaOffset(consumerRecord.offset())
+                .errorDetails(exception.getMessage())
+                .build();
     }
 }
