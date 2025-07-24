@@ -40,6 +40,7 @@ public class LibraryEventDLQListerner {
                 .topicName(consumerRecord.topic())
                 .kafkaPartition(consumerRecord.partition())
                 .kafkaOffset(consumerRecord.offset())
+                .errorDetails(objectMapper.writeValueAsString(libraryEvent))
                 .build();
     }
 }
